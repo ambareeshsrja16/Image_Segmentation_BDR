@@ -13,6 +13,9 @@ class ImageSegmentation:
         self.posterior_probability = None  # To be evaluated in create_posterior_probability method
         self.data_filename = training_data
 
+        self.prior_class_0 = 0.0
+        self.prior_class_1 = 0.0
+
     @staticmethod
     def create_feature_array_from_data(data):
         """
@@ -104,10 +107,11 @@ class ImageSegmentation:
 
         assert len(bins) == 64  # All bin left edges and the last bin right edge
 
-        prior_class_0 = len(feature_class_0) / (len(feature_class_0) + len(feature_class_1))
-        prior_class_1 = 1 - prior_class_0
+        self.prior_class_0 = len(feature_class_0) / (len(feature_class_0) + len(feature_class_1))
+        self.prior_class_1 = 1 - self.prior_class_0
 
-        posterior_class_0, posterior_class_1 = likelihood_class_0 * prior_class_0, likelihood_class_1 * prior_class_1
+        posterior_class_0, posterior_class_1 = likelihood_class_0 * self.prior_class_0, \
+                                               likelihood_class_1 * self.prior_class_1
         # P(Y|X) = (P(X|Y) * P(Y))/ P(X) , since P(X) is common for both, ignore that for comparisons
 
         posterior_predictions = np.greater(posterior_class_1, posterior_class_0)  # if class_1 has higher probability,
@@ -123,7 +127,7 @@ class ImageSegmentation:
         :return: y (0 or 1)
         """
         assert isinstance(block, np.ndarray)
-        assert block.size == f**2
+        assert block.size == f**2, f"{block.shape}"
         assert self.posterior_probability, "Call method create_posterior_probability() " \
                                            "to fill up posterior_probability dictionary"
 
@@ -141,11 +145,13 @@ class ImageSegmentation:
         return y
 
     def do_segmentation(self, test_image_name="cheetah.bmp",
-                        ground_truth_image_name=None):
+                        ground_truth_image_name=None,sliding_window=True):
         """
         Perform segmentation using Bayesian Decision Rule
         :param test_image_name: Image to be tested for segmentation
         :param ground_truth_image_name: Segmentation mask  (ground truth), to compare algorithm results
+        :param sliding_window: Do sliding window based prediction (for better results)
+
         """
         assert isinstance(test_image_name, str)
 
@@ -168,21 +174,31 @@ class ImageSegmentation:
 
         R, C = segmentation_mask.shape
 
-        for i in range(R):
-            for j in range(C):
-                segmentation_mask[i, j] = self.get_prediction_on_block(padded_test_image[i:i+f, j:j+f].copy(), f)
-                # pass a copy of the numpy array view, so that original is unaffected
+        if sliding_window:
+            for i in range(R):
+                for j in range(C):
+                    segmentation_mask[i, j] = self.get_prediction_on_block(padded_test_image[i:i+f, j:j+f], f)
+        else:
+            i, j = 0, 0
+            while i in range(R):
+                while j in range(C):
+                    segmentation_mask[i:i+f, j:j+f] = self.get_prediction_on_block(padded_test_image[i:i+f, j:j+f], f)
+                    j += f
+                i += f
 
         if ground_truth_image_name:
             ground_truth_image = cv2.imread(ground_truth_image_name)
             ground_truth_image = cv2.cvtColor(ground_truth_image, cv2.COLOR_BGR2GRAY)
-            mse_for_mask = np.mean((ground_truth_image/255-segmentation_mask)**2)
+
+            false_positives_perc = np.sum(((ground_truth_image/255) == 0) & (segmentation_mask == 1)) / np.sum((ground_truth_image/255) == 1)
+            false_negatives_perc = np.sum(((ground_truth_image/255) == 1) & (segmentation_mask == 0)) / np.sum((ground_truth_image/255) == 0)
+            prob_of_error = false_positives_perc*self.prior_class_1 + false_negatives_perc*self.prior_class_0
 
             fig, ax = plt.subplots(nrows=1, ncols=2)
             _ = ax[0].imshow(ground_truth_image, cmap="gray")
             _ = ax[1].imshow(segmentation_mask, cmap="gray")
             _ = ax[0].set_title("Ground truth", fontsize="small")
-            _ = ax[1].set_title(f"Segmentation Result | MSE: {mse_for_mask:.3f}", fontsize="small")
+            _ = ax[1].set_title(f"Segmentation Result | Prob. of Error: {prob_of_error:.3f}", fontsize="small")
 
             fig.suptitle(test_image_name + " | Binary Segmentation using Bayesian Decision Rule")
 
@@ -266,7 +282,7 @@ if __name__ == "__main__":
     ground_truth_image_name = "cheetah_mask.bmp"
 
     img_segment = ImageSegmentation(data_filename)
-    img_segment.create_posterior_probability(show_figure=True)
+    img_segment.create_posterior_probability(show_figure=False)
     img_segment.do_segmentation(test_image_name, ground_truth_image_name)
 
 
