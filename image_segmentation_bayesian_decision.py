@@ -33,9 +33,9 @@ class ImageSegmentation:
 
         return features
 
-
     @staticmethod
-    def plot_histogram(feature_0, feature_1, title="P(X|Y) Frequency of Occurrence histogram", normalize=False, show=False):
+    def plot_histogram(feature_0, feature_1, title="P(X|Y) Frequency of Occurrence histogram",
+                       normalize=False, show=False):
         """
         Plot histograms in a single plot  for two histogram data
         Format: feature_0  = (x, bins)
@@ -56,18 +56,25 @@ class ImageSegmentation:
         #   the first bin is [1, 2) (including 1, but excluding 2) and the second [2, 3).
         #       The last bin, however, is [3, 4], which includes 4.
 
-        _ = ax[0].title.set_text("Y=0 Grass")
-        _ = ax[1].title.set_text("Y=1 Cheetah")
+        ax[0].set_title("Class conditional probability (Y=0, Grass)", fontsize='small')
+        ax[1].set_title("Class conditional probability (Y=1, Cheetah)",fontsize='small')
+        ax[0].set_xlabel('DCT component index')
+        ax[1].set_xlabel('DCT component index')
+        ax[0].set_ylabel('P(X|Y)')
+        ax[1].set_ylabel('P(X|Y)')
 
         fig.suptitle(title)
+
         if show:
             plt.show()
+            plt.waitforbuttonpress()
+
+        plt.close('all')
 
         if normalize:
             return (prob_class_0, prob_class_1), bins_0
 
-
-    def create_posterior_probability(self):
+    def create_posterior_probability(self, show_figure=False):
         """
         Given filename for .mat file containing Training and Test data, create likelihood estimation functions for both classes
         Estimate P(X|Y) from Training data for both Y=1 and Y=0
@@ -86,9 +93,11 @@ class ImageSegmentation:
         self.plot_histogram(feature_class_0, feature_class_1, normalize=False)
 
         # Plot normalized histogram
-        probs, bins = self.plot_histogram(feature_class_0, feature_class_1, title="P(X|Y) Normalized histogram", normalize=True)
+        probabilities, bins = self.plot_histogram(feature_class_0, feature_class_1, title="P(X|Y) Normalized histogram",
+                                                  normalize=True,
+                                                  show=show_figure)
 
-        likelihood_class_0, likelihood_class_1 = probs
+        likelihood_class_0, likelihood_class_1 = probabilities
 
         assert math.isclose(sum(likelihood_class_0), 1) \
                and math.isclose(sum(likelihood_class_1), 1), "Normalized probabilities should sum to 1"
@@ -106,7 +115,6 @@ class ImageSegmentation:
 
         self.posterior_probability = {key: val for (key, val) in zip(bins[:-1], posterior_predictions)}  # Lookup table
 
-
     def get_prediction_on_block(self, block, f=8):
         """
         Gets a numpy array (a block of pixels from the image of size f*f and predicts if that block belongs to 0 or 1
@@ -116,29 +124,37 @@ class ImageSegmentation:
         """
         assert isinstance(block, np.ndarray)
         assert block.size == f**2
-        assert self.posterior_probability, "Call method create_posterior_probability() to fill up posterior_probability dictionary"
+        assert self.posterior_probability, "Call method create_posterior_probability() " \
+                                           "to fill up posterior_probability dictionary"
 
         # OpenCV equivalent of MATLAB function dct2
-        dct_block = cv2.dct(block)
+        dct_block = cv2.dct(block/255.0)  # Division by 255 to normalize image
 
-        ## START FROM HERE,
-        # perform dct on elements,
-        # get zigzagged elmeents from static method
-        # Generate feature (write function for that
+        dct_vector = self.generate_zig_zig_pattern(dct_block)
+        dct_feature = np.argmax(np.abs(dct_vector[1:])) + 1  # Need to have indexes from 1 to end, and neglect the 0th
 
+        assert 1 <= dct_feature <= 63, f"Should only gave indices [1,63] {dct_feature}"
+
+        y = self.posterior_probability[dct_feature]  # prediction, from pre-computed lookup table
+
+        assert y in (0, 1)
         return y
 
-    def do_segmentation(self, test_image_name = "cheetah.bmp"):
+    def do_segmentation(self, test_image_name="cheetah.bmp",
+                        ground_truth_image_name=None):
         """
-
-        :param test_image_name:
-        :return:
+        Perform segmentation using Bayesian Decision Rule
+        :param test_image_name: Image to be tested for segmentation
+        :param ground_truth_image_name: Segmentation mask  (ground truth), to compare algorithm results
         """
-
         assert isinstance(test_image_name, str)
 
+        if ground_truth_image_name:
+            assert isinstance(ground_truth_image_name, str)
+
         test_image = cv2.imread(test_image_name)
-        test_image = cv2.cvtColor(test_image, cv2.COLOR_BGR2GRAY)  # convert to GScale, cv2 reads images by default as BGR
+        # convert to GScale cv2 reads images by default as BGR
+        test_image = cv2.cvtColor(test_image, cv2.COLOR_BGR2GRAY)
 
         assert len(test_image.shape) == 2
 
@@ -154,8 +170,30 @@ class ImageSegmentation:
 
         for i in range(R):
             for j in range(C):
-                segmentation_mask[i,j] = self.get_prediction_on_block(padded_test_image[i:i+f, j:j+f].copy(), f)
+                segmentation_mask[i, j] = self.get_prediction_on_block(padded_test_image[i:i+f, j:j+f].copy(), f)
                 # pass a copy of the numpy array view, so that original is unaffected
+
+        if ground_truth_image_name:
+            ground_truth_image = cv2.imread(ground_truth_image_name)
+            ground_truth_image = cv2.cvtColor(ground_truth_image, cv2.COLOR_BGR2GRAY)
+            mse_for_mask = np.mean((ground_truth_image/255-segmentation_mask)**2)
+
+            fig, ax = plt.subplots(nrows=1, ncols=2)
+            _ = ax[0].imshow(ground_truth_image, cmap="gray")
+            _ = ax[1].imshow(segmentation_mask, cmap="gray")
+            _ = ax[0].set_title("Ground truth", fontsize="small")
+            _ = ax[1].set_title(f"Segmentation Result | MSE: {mse_for_mask:.3f}", fontsize="small")
+
+            fig.suptitle(test_image_name + " | Binary Segmentation using Bayesian Decision Rule")
+
+        else:
+            plt.imshow(segmentation_mask, cmap='gray')
+            title = test_image_name + " | Binary Segmentation using Bayesian Decision Rule"
+            plt.title = title
+            plt.show()
+
+        plt.waitforbuttonpress()
+        plt.close("all")
 
     @staticmethod
     def generate_zig_zig_pattern(input_array):
@@ -222,9 +260,14 @@ class ImageSegmentation:
 
 if __name__ == "__main__":
     data_filename = "TrainingSamplesDCT_8"
+    test_image_name = "cheetah.bmp"
+
+    # If needed for comparison
+    ground_truth_image_name = "cheetah_mask.bmp"
 
     img_segment = ImageSegmentation(data_filename)
-    img_segment.create_posterior_probability()
+    img_segment.create_posterior_probability(show_figure=True)
+    img_segment.do_segmentation(test_image_name, ground_truth_image_name)
 
 
 
